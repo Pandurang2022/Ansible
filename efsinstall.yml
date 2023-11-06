@@ -1,0 +1,134 @@
+---
+- name: aws efs installation
+  hosts: all
+  become: yes
+  vars:
+    DOWNLOADDIR: /opt/gicloud/terraform
+    STUNNEL: 'stunnel-latest'
+
+  tasks:
+    - name: 'install required packages'
+      dnf:
+        name: '{{item}}'
+        state: latest
+      loop:
+        - git
+        - rpm-build
+        - make
+        - gcc
+        - openssl-devel
+        - nfs-utils
+        - python3
+
+    - name: Install botocore
+      ansible.builtin.pip:
+        name: botocore
+        executable: pip3
+
+    - name: Create a directory if it does not exist
+      ansible.builtin.file:
+        path: '{{DOWNLOADDIR}}'
+        state: directory
+        mode: '0755'
+
+    - name: 'check if efs-utils exist'
+      stat:
+        path: /etc/amazon/efs/efs-utils.conf
+      register: efsutils
+
+    - name: 'Download efs-utils'
+      git:
+        repo: https://github.com/aws/efs-utils
+        dest: '{{DOWNLOADDIR}}'
+      when: not efsutils.stat.exists
+
+    - name: 'create efs-utils rpm'
+      ansible.builtin.command: make rpm
+      args:
+        chdir: '{{DOWNLOADDIR}}'
+      when: not efsutils.stat.exists
+
+    - name: 'change permission on efs-utils'
+      file:
+        path: '{{DOWNLOADDIR}}/build/'
+        mode: '755'
+        recurse: yes
+      when: not efsutils.stat.exists
+
+    - name: Install package.
+      ansible.builtin.command: yum -y install stunnel
+
+    - name: Install package.
+      ansible.builtin.command: rpm -Uvh '{{DOWNLOADDIR}}/build/amazon-efs-utils*.rpm'
+        #name: '{{DOWNLOADDIR}}/build/amazon-efs-utils*.rpm'
+        #install_weak_deps: true
+        #state: present
+      when: not efsutils.stat.exists
+
+    - name: Ensure CURL source downloaded
+      get_url: url=https://www.stunnel.org/downloads/{{STUNNEL}}.tar.gz dest='{{DOWNLOADDIR}}'
+
+    - name: Extract stunnel tar into download dir
+      ansible.builtin.unarchive:
+        src: '{{DOWNLOADDIR}}/{{STUNNEL}}.tar.gz'
+        dest: '{{DOWNLOADDIR}}'
+        remote_src: yes
+
+    - name: if /bin/stunnel remove it
+      stat:
+        path: /bin/stunnel
+      register: result
+
+    - name: remove old stunnel
+      ansible.builtin.command: rm /bin/stunnel
+      when: result.stat.exists
+
+    - name: Find /var/log files equal or greater than 10 megabytes ending with .old or .log.gz
+      ansible.builtin.find:
+        paths: '{{DOWNLOADDIR}}'
+        patterns: 'stunnel*'
+        file_type: directory
+      register: dir
+
+    - name: Build tunnel package
+      ansible.builtin.shell: '{{item}}'
+      args:
+        chdir: '{{dir.files[0].path}}'
+      with_items:
+        - ./configure
+        - make install
+
+    - name: if /bin/stunnel mv it
+      stat:
+        path: /bin/stunnel
+      register: result
+
+    - name: mv /bin/stunne to root
+      ansible.builtin.command: mv /bin/stunnel /root
+      when: result.stat.exists
+
+    - name: create slink to new stunnel
+      ansible.builtin.file:
+        src: /usr/local/bin/stunnel
+        dest: /bin/stunnel
+        state: link
+
+    - name: Add a line to a file if
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/mount-efs.service
+        line: "[Unit]\nDescription=Mounting NFS file systems sequentially at boot time\nAfter=remote-fs.target\n\n[Service]\nType=oneshot\nExecStart=/bin/mount -avt efs\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target"
+        create: yes
+
+    - name: Change file ownership, group and permissions
+      ansible.builtin.file:
+        path: /etc/systemd/system/mount-efs.service
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Reload service
+      ansible.builtin.systemd:
+        name: mount-efs.service
+        daemon_reload: true
+        enabled: true
+        state: started
