@@ -1,0 +1,53 @@
+---
+- name: ' Mount EFS Filesystem'
+  hosts: all
+  become: yes
+  vars:
+    pth: '/data'
+    fs: 'fs-018fa40c87f9e63a0'
+    fsap: 'fsap-0e2c0df0457cbcc3a'
+
+  tasks:
+    - name: 'check if mount path exist'
+      stat:
+        path: '{{pth}}'
+      register: register_path
+
+    - name: Create a directory if it does not exist
+      ansible.builtin.file:
+        path: '{{pth}}'
+        state: directory
+      when: not register_path.stat.exists or not register_path.stat.isreg
+
+    - name: Add mount point entry in /etc/fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        state: present
+        line: "{{fs}} {{pth}} efs _netdev,hard,intr,sync,bg,noac,rsize=131072,wsize=131072,noresvport,tls,iam,accesspoint={{fsap}}"
+
+    #- name: Mount an EFS volume
+    #  ansible.posix.mount:
+    #    src: '{{fs}}'
+    #    path: '{{pth}}'
+    #    opts: efs _netdev,hard,intr,sync,bg,noac,rsize=131072,wsize=131072,noresvport,tls,iam,accesspoint='{{fsap}}'
+    #    state: mounted
+    #    fstype: efs
+
+    - name: cat the contents of /etc/fstab
+      ansible.builtin.command: mount -a
+
+    - name: cat the contents of /etc/fstab
+      ansible.builtin.command: cat /etc/fstab
+      register: fstab
+
+    - name: "Print the file content to a console"
+      debug:
+        msg: "{{ fstab.stdout }}"
+
+    - name: list current mountpoints
+      ansible.builtin.command: df -h
+      register: listfs
+
+    - name: "list mount points to a console"
+      debug:
+        msg: "{{ listfs.stdout }}"
